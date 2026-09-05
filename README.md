@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="claude-a2a-bridge-definition/icon.png" alt="Claude A2A Bridge logo" width="120">
+</p>
+
 # Claude A2A Bridge Policy
 
 A MuleSoft Omni Gateway custom policy that bridges inbound **A2A protocol
