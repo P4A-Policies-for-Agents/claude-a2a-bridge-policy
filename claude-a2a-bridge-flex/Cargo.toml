@@ -1,0 +1,42 @@
+# Copyright 2026 Salesforce, Inc. All rights reserved.
+[package]
+name = "claude_bridge_policy"
+version = "1.0.0"
+rust-version = "1.88.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[package.metadata.anypoint]
+group_id = "00000000-0000-0000-0000-000000000000"
+definition_asset_id = { name = "claude-bridge-policy", version = "1.0.0" }
+implementation_asset_id = "claude-bridge-policy-flex"
+
+[dependencies]
+# NOTE: pdk 1.10.0. pdk's DataStorageError::Serialization variant changed its inner
+# type from `bincode::Error` to `serde_fixint::Error` in pdk-data-storage-lib 1.9.2
+# (carried by 1.9.2 and 1.10.x). The only code affected was the test-only MockStorage
+# in the inlined store modules, which now maps its bincode encode/decode errors into
+# the version-agnostic DataStorageError::Unexpected variant. Production code never
+# constructs the Serialization variant, so the runtime WASM is unaffected.
+pdk = { version = "1.10.0", features = ["experimental", "enable_stop_iteration"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", default-features = false, features = ["alloc", "raw_value"] }
+anyhow = "1.0"
+uuid = { version = "1.0", features = ["v4"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+
+[dev-dependencies]
+pdk-unit = { version = "1.10.0", features = ["experimental", "enable_stop_iteration", "experimental_local_mode"] }
+pdk-test = { version = "1.10.0" }
+httpmock = "0.6"
+reqwest = { version = "0.12", features = ["json"] }
+tokio = { version = "1", features = ["macros", "rt", "time"] }
+bincode = "1"
+
+[profile.release]
+lto = true
+opt-level = 'z'
+strip = "debuginfo"
+panic = "abort"

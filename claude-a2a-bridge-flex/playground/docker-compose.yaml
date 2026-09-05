@@ -1,0 +1,25 @@
+services:
+  flex:
+    image: mulesoft/flex-gateway:1.11.0
+    ports:
+      - "8185:8185"
+    volumes:
+      - ./config:/usr/local/share/mulesoft/flex-gateway/conf.d/
+    networks:
+      - gw-net
+    depends_on:
+      - wiremock
+
+  wiremock:
+    image: wiremock/wiremock:latest
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config/wiremock:/home/wiremock
+    command: ["--verbose"]
+    networks:
+      - gw-net
+
+networks:
+  gw-net:
+    driver: bridge

@@ -1,0 +1,29 @@
+apiVersion: gateway.mulesoft.com/v1alpha1
+kind: ApiInstance
+metadata:
+  name: claude-bridge
+spec:
+  address: http://0.0.0.0:8186
+  services:
+    # The bridge reuses THIS cluster for its outbound Claude calls (via
+    # xds.cluster_name), so its TLS/credential-injection apply to the callouts.
+    anthropic:
+      address: https://api.anthropic.com
+      routes:
+        - config:
+            destinationPath: /
+  policies:
+    - policyRef:
+        name: claude-bridge-policy-v1-0-impl
+        namespace: default
+      config:
+        agentId: "REPLACE_WITH_AGENT_ID"
+        environmentId: "REPLACE_WITH_ENVIRONMENT_ID"
+        apiKey: "REPLACE_WITH_ANTHROPIC_API_KEY"
+        anthropicVersion: "2023-06-01"
+        betaHeader: "managed-agents-2026-04-01"
+        timeout: 30000
+        pollIntervalMs: 1000
+        maxPollAttempts: 120
+        agentCard: >-
+          {"protocolVersion":"0.3.0","name":"Claude Bridge","description":"A2A bridge to an Anthropic Claude managed agent.","url":"http://localhost:8186/","preferredTransport":"JSONRPC","version":"1.0.0","capabilities":{"streaming":false},"defaultInputModes":["text/plain"],"defaultOutputModes":["text/plain"],"skills":[{"id":"chat","name":"Chat","description":"General chat with the managed agent.","tags":[]}]}

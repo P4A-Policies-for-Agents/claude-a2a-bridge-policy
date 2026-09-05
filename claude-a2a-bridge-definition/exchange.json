@@ -1,0 +1,8 @@
+{
+  "main": "gcl.yaml",
+  "groupId": "00000000-0000-0000-0000-000000000000",
+  "assetId": "claude-bridge-policy",
+  "version": "1.0.0",
+  "name": "Claude A2A Bridge",
+  "description": "Bridges A2A protocol requests to the Anthropic Claude Managed Agents API."
+}

@@ -1,0 +1,167 @@
+---
+apiVersion: gateway.mulesoft.com/v1alpha1
+kind: Extension
+metadata:
+  labels:
+    title: Claude A2A Bridge
+    description: Bridges A2A protocol requests to the Anthropic Claude Managed Agents API.
+    category: A2A
+    metadata/interfaceScope: api
+    metadata/capabilities/assetTypes: a2a
+spec:
+  extends:
+    - name: extension-definition
+      namespace: default
+  properties:
+    agentId:
+      title: Agent ID
+      description: >
+        The Anthropic managed agent id (agent_...) this bridge starts sessions against.
+      type: string
+    environmentId:
+      title: Environment ID
+      description: >
+        The Anthropic managed-agent environment id (env_...) the session runs in.
+      type: string
+    apiKey:
+      title: API Key
+      description: >
+        Anthropic API key, sent as the x-api-key header on every Claude API call.
+      type: string
+      "@context":
+        "@characteristics":
+          - "security:sensitive"
+    agentCardSource:
+      title: Agent Card Source
+      description: >
+        Where the served A2A agent card comes from. "paste": serve the agentCard JSON below.
+        "derive": build the card at request time from the managed agent's own configuration
+        (name, description, skills, metadata), synthesizing skills from the agent's MCP servers
+        when it defines none. The agent's system prompt is never exposed in either mode.
+      type: string
+      enum:
+        - paste
+        - derive
+      default: paste
+    agentCard:
+      title: Agent Card
+      description: >
+        A2A agent card JSON served at /.well-known/agent-card.json. Required when
+        agentCardSource is "paste". When "derive", an optional override whose top-level fields
+        win over the derived card (e.g. to pin the interface url).
+      type: string
+    cardDerivation:
+      title: Card Derivation
+      description: >
+        Tuning for agentCardSource=derive (ignored for paste).
+      type: object
+      properties:
+        excludeMcpServers:
+          title: Exclude MCP Servers
+          description: >
+            Glob patterns (case-insensitive, '*') matched against the agent's MCP server names;
+            matches are excluded from the synthesized card skills. Use to drop shared
+            infrastructure servers that are plumbing rather than user-facing capabilities
+            (e.g. "slack_*" or "*_slack" to omit a shared Slack connector).
+          type: array
+          items:
+            type: string
+    anthropicVersion:
+      title: Anthropic Version
+      description: Value for the anthropic-version header.
+      type: string
+      default: "2023-06-01"
+    betaHeader:
+      title: Anthropic Beta Header
+      description: Value for the anthropic-beta header that enables the Managed Agents API.
+      type: string
+      default: "managed-agents-2026-04-01"
+    timeout:
+      title: Per-call Timeout (ms)
+      description: >
+        Maximum time to wait for a single Claude API call (create session, send message, poll
+        events). This is not the overall turn budget — that is pollIntervalMs x maxPollAttempts.
+      type: integer
+      default: 60000
+    pollIntervalMs:
+      title: Poll Interval (ms)
+      description: >
+        Delay between polls of the session events endpoint while a turn runs. Together with
+        maxPollAttempts this sets the overall turn budget.
+      type: integer
+      default: 2000
+    maxPollAttempts:
+      title: Max Poll Attempts
+      description: >
+        Maximum number of event polls before a turn is abandoned. Together with pollIntervalMs
+        this bounds the overall response budget.
+      type: integer
+      default: 150
+    toolConfirmation:
+      title: Tool Confirmation
+      description: >
+        Human-in-the-loop gating for managed-agent tool use. Each pending tool is matched against
+        `rules` in order (first match wins) by its key — tool_use:<name> for built-in tools,
+        mcp_tool_use:<server>/<name> for MCP (case-insensitive, '*' globs). Unmatched tools use
+        defaultAction. allow/deny are decided automatically; defer surfaces the tool to the caller
+        as TASK_STATE_INPUT_REQUIRED and resumes on the next message.
+      type: object
+      properties:
+        defaultAction:
+          title: Default Action
+          description: Action for tools that match no rule.
+          type: string
+          enum:
+            - allow
+            - deny
+            - defer
+          default: defer
+        logDecisions:
+          title: Log Decisions
+          description: >
+            When true, every tool-confirmation decision (allow/deny/defer) is written to the
+            access log with the tool key, decision, and context.
+          type: boolean
+          default: false
+        rules:
+          title: Rules
+          description: Ordered match rules; the first whose tool pattern matches decides the action.
+          type: array
+          items:
+            type: object
+            properties:
+              tool:
+                title: Tool pattern
+                description: Glob (with '*') matched case-insensitively against the tool key.
+                type: string
+              action:
+                title: Action
+                description: Decision for tools matching this rule.
+                type: string
+                enum:
+                  - allow
+                  - deny
+                  - defer
+              message:
+                title: Deny message
+                description: >
+                  Optional deny_message sent to the agent when action is deny. Supports the same
+                  ${{tool_name}} / ${{tool_key}} / ${{mcp_server}} placeholders as prompt.
+                type: string
+              prompt:
+                title: Approval prompt
+                description: >
+                  Optional human-facing message shown to the caller when this rule defers a tool
+                  for approval (TASK_STATE_INPUT_REQUIRED), replacing the generic ask. A standard
+                  "Reply approve/deny" instruction is appended automatically. Supports placeholders
+                  substituted per pending tool: ${{tool_name}}, ${{tool_key}} (full canonical key,
+                  e.g. tool_use:bash or mcp_tool_use:server/name), and ${{mcp_server}} (empty for
+                  built-in tools).
+                type: string
+            required:
+              - tool
+              - action
+  required:
+    - agentId
+    - environmentId
+    - apiKey

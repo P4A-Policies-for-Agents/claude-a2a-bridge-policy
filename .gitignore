@@ -1,0 +1,13 @@
+# Rust / wasm build output
+target/
+**/target/
+*.wasm
+# packaged policy bundles + local Flex playground run dirs
+policies_config/
+playground/target/
+playground/config/custom-policies/
+# OS junk
+.DS_Store
+Thumbs.db
+# Local agent tooling state (reviewer memory, etc.) — never ship
+.claude/
