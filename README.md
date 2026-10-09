@@ -84,6 +84,7 @@ Configured via `claude-a2a-bridge-definition/gcl.yaml`. Key parameters:
 | `timeout` | integer (ms) | `60000` | Per-call timeout for a single Claude API request |
 | `pollIntervalMs` | integer (ms) | `2000` | Delay between event-stream polls |
 | `maxPollAttempts` | integer | `150` | Max polls before a turn is abandoned |
+| `sessionTtlMinutes` | integer (min) | `60` | How long a paused `input-required` conversation stays resumable in gateway storage (clamped 1–1440); after it lapses a later reply starts a new turn |
 | `toolConfirmation.defaultAction` | enum `allow`\|`deny`\|`defer` | `defer` | Action for tools matching no rule |
 | `toolConfirmation.logDecisions` | boolean | `false` | Log every tool-confirmation decision |
 | `toolConfirmation.rules` | array\<object\> | — | Ordered glob rules (`tool`, `action`, `message`, `prompt`) |

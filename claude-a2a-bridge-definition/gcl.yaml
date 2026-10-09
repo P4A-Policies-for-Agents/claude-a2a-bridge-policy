@@ -97,6 +97,17 @@ spec:
         this bounds the overall response budget.
       type: integer
       default: 150
+    sessionTtlMinutes:
+      title: Session TTL (minutes)
+      description: >
+        How long a paused conversation awaiting human approval (input-required) stays resumable in
+        gateway storage. After it lapses, the pending approval is discarded and a later reply starts
+        a new turn, so the gated action does not run (fail-safe). The managed-agent session itself
+        has no fixed idle timeout, so this value is the effective window an approver has — size it to
+        your approval SLA (minutes for live approvals, up to a few hours for async review). Clamped
+        to 1–1440.
+      type: integer
+      default: 60
     toolConfirmation:
       title: Tool Confirmation
       description: >

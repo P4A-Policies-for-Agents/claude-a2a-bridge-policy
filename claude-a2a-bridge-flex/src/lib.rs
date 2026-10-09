@@ -514,12 +514,21 @@ async fn configure(
 
     logger::debug!("[claude-bridge] loaded — agent_id={}", config.agent_id);
 
-    const SESSION_TTL_MILLIS: u32 = 30 * 60 * 1000; // 30 minutes
+    // Gateway-side window a paused (input-required) conversation stays resumable. Configurable via
+    // sessionTtlMinutes (default 60), clamped to [1, 1440] minutes. The managed-agent session has
+    // no fixed idle timeout, so this is the effective approver window. 1440 min stays well under
+    // the u32-millis ceiling the remote store accepts.
+    const DEFAULT_SESSION_TTL_MINUTES: i64 = 60;
+    let ttl_minutes = config
+        .session_ttl_minutes
+        .unwrap_or(DEFAULT_SESSION_TTL_MINUTES)
+        .clamp(1, 1440);
+    let session_ttl_millis: u32 = ttl_minutes as u32 * 60 * 1000;
     let poll_ms = config.poll_interval_ms.unwrap_or(DEFAULT_POLL_INTERVAL_MS).max(1) as u64;
     let timer = clock.period(Duration::from_millis(poll_ms));
 
     let storage_name = format!("claude-bridge-{}", config.agent_id);
-    let storage = store_builder.remote(storage_name, SESSION_TTL_MILLIS);
+    let storage = store_builder.remote(storage_name, session_ttl_millis);
 
     let filter = on_request(|rs, http_client, stream_properties| {
         request_filter(rs, http_client, stream_properties, &config, &storage, &timer)

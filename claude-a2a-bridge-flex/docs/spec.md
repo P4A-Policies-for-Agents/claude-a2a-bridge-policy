@@ -108,7 +108,7 @@ Unsupported methods return JSON-RPC `-32601` (method not found).
 
 On the first `message/send` for a `contextId`:
 1. `POST /v1/sessions` with `{ "agent": <agentId>, "environment_id": <environmentId> }`.
-2. Store `{ session_id }` in the session record keyed by `contextId` (local `session_store::SessionStore`, backed by `data_storage`, TTL 30 min).
+2. Store `{ session_id }` in the session record keyed by `contextId` (local `session_store::SessionStore`, backed by `data_storage`; TTL = `sessionTtlMinutes`, default 60 min, clamped 1–1440). After the TTL lapses the record is dropped — a later `message/send` on that `contextId` (including a late reply to a deferred `input-required` gate) starts a fresh session.
 
 On every `message/send` (first or follow-up):
 1. Submit `POST /v1/sessions/{sessionId}/events` with `{ "events": [ { "type": "user.message", "content": [ { "type": "text", "text": <joined parts> } ] } ] }`.
@@ -343,4 +343,4 @@ This policy targets an **A2A / agent asset** under management — not plain HTTP
 5. **Group id** — this repo ships with a placeholder all-zeros Exchange `groupId`; set it to the publishing org before release.
 6. **Toolchain** — built against PDK `1.10.0` with crates.io-only dependencies (no private/workspace crates).
 
-Validated end-to-end against the live Managed Agents API (Claude A2A POC agent): `message/send` completion + `Task.metadata` token usage; the event wire shapes; the full tool-confirmation gate — `defer → INPUT_REQUIRED → resume(approve) → COMPLETED`, `read` auto-allow, and `bash` auto-deny; and multi-turn follow-ups on a reused `contextId` (each turn returns its own answer and per-turn usage). 14 unit tests cover mapping, the gate resolver, the auto-allow/deny/defer paths, and turn scoping.
+Validated end-to-end against the live Managed Agents API (Claude A2A POC agent): `message/send` completion + `Task.metadata` token usage; the event wire shapes; the full tool-confirmation gate — `defer → INPUT_REQUIRED → resume(approve) → COMPLETED`, `read` auto-allow, and `bash` auto-deny; and multi-turn follow-ups on a reused `contextId` (each turn returns its own answer and per-turn usage). 75 unit tests cover mapping, the gate resolver, the auto-allow/deny/defer and HITL-resume paths, turn scoping, card derivation, and the session/task stores.
