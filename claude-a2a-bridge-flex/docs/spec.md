@@ -108,7 +108,7 @@ Unsupported methods return JSON-RPC `-32601` (method not found).
 
 On the first `message/send` for a `contextId`:
 1. `POST /v1/sessions` with `{ "agent": <agentId>, "environment_id": <environmentId> }`.
-2. Store `{ session_id }` in the session record keyed by `contextId` (local `session_store::SessionStore`, backed by `data_storage`, TTL 30 min).
+2. Store `{ session_id }` in the session record keyed by `contextId` (local `session_store::SessionStore`, backed by `data_storage`; TTL = `sessionTtlMinutes`, default 60 min, clamped 1–1440). After the TTL lapses the record is dropped — a later `message/send` on that `contextId` (including a late reply to a deferred `input-required` gate) starts a fresh session.
 
 On every `message/send` (first or follow-up):
 1. Submit `POST /v1/sessions/{sessionId}/events` with `{ "events": [ { "type": "user.message", "content": [ { "type": "text", "text": <joined parts> } ] } ] }`.
