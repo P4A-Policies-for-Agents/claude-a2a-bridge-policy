@@ -1,7 +1,7 @@
 # Copyright 2026 Salesforce, Inc. All rights reserved.
 [package]
 name = "claude_bridge_policy"
-version = "1.0.0"
+version = "1.1.0"
 rust-version = "1.88.0"
 edition = "2021"
 
@@ -10,7 +10,7 @@ crate-type = ["cdylib", "rlib"]
 
 [package.metadata.anypoint]
 group_id = "00000000-0000-0000-0000-000000000000"
-definition_asset_id = { name = "claude-bridge-policy", version = "1.0.0" }
+definition_asset_id = { name = "claude-bridge-policy", version = "1.1.0" }
 implementation_asset_id = "claude-bridge-policy-flex"
 
 [dependencies]

@@ -614,7 +614,7 @@ dependencies = [
 
 [[package]]
 name = "claude_bridge_policy"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "bincode",
