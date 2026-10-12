@@ -122,9 +122,12 @@ spec:
     recoveryMaxAgeMinutes:
       title: Recovery Max Age (minutes)
       description: >
-        Only used when sessionRecovery is true. The oldest a session may be and still be recovered;
-        conversations last active longer ago than this are not revived (a later reply starts fresh).
-        Bounds the lookup and prevents resuming a stale approval. Clamped 1-43200 (30 days).
+        Only used when sessionRecovery is true. The maximum age — by session creation time — a
+        session may be and still be recovered; sessions created longer ago than this are not revived
+        (a later reply starts fresh), which also prevents resuming a stale approval. Set this LARGER
+        than sessionTtlMinutes so recovery extends the resumable window past the hot cache; a value
+        at or below sessionTtlMinutes leaves nothing for recovery to find on a normal expiry, so
+        recovery effectively does nothing. Clamped 1-43200 (30 days).
       type: integer
       default: 1440
     toolConfirmation:
