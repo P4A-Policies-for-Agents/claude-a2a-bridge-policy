@@ -46,6 +46,10 @@ pub struct Config {
     pub max_poll_attempts: Option<i64>,
     #[serde(alias = "pollIntervalMs")]
     pub poll_interval_ms: Option<i64>,
+    #[serde(alias = "recoveryMaxAgeMinutes")]
+    pub recovery_max_age_minutes: Option<i64>,
+    #[serde(alias = "sessionRecovery")]
+    pub session_recovery: Option<bool>,
     #[serde(alias = "sessionTtlMinutes")]
     pub session_ttl_minutes: Option<i64>,
     #[serde(alias = "timeout")]

@@ -85,6 +85,8 @@ Configured via `claude-a2a-bridge-definition/gcl.yaml`. Key parameters:
 | `pollIntervalMs` | integer (ms) | `2000` | Delay between event-stream polls |
 | `maxPollAttempts` | integer | `150` | Max polls before a turn is abandoned |
 | `sessionTtlMinutes` | integer (min) | `60` | How long a paused `input-required` conversation stays resumable in gateway storage (clamped 1–1440); after it lapses a later reply starts a new turn |
+| `sessionRecovery` | boolean | `false` | Resume a conversation whose hot-cache entry expired by finding its live Claude session by `contextId` (see [Session recovery](#session-recovery)) |
+| `recoveryMaxAgeMinutes` | integer (min) | `1440` | When recovery is on, the oldest a session may be to be revived (clamped 1–43200) |
 | `toolConfirmation.defaultAction` | enum `allow`\|`deny`\|`defer` | `defer` | Action for tools matching no rule |
 | `toolConfirmation.logDecisions` | boolean | `false` | Log every tool-confirmation decision |
 | `toolConfirmation.rules` | array\<object\> | — | Ordered glob rules (`tool`, `action`, `message`, `prompt`) |
@@ -92,6 +94,90 @@ Configured via `claude-a2a-bridge-definition/gcl.yaml`. Key parameters:
 See `claude-a2a-bridge-flex/docs/spec.md` for the full protocol coverage and
 task lifecycle, and `claude-a2a-bridge-flex/docs/agent-card-asset-source.md`
 for the paste vs. derive agent-card modes.
+
+### Session recovery
+
+`sessionTtlMinutes` keeps a conversation's `contextId → session` mapping in gateway
+storage so follow-up turns are fast. That mapping is a **performance cache**; when it
+expires, a follow-up (including a late reply to a paused `input-required` approval)
+would normally start a brand-new session and lose the thread. But the **managed-agent
+session itself persists on Claude's side** until deleted — it's only the gateway's
+handle that's gone.
+
+With `sessionRecovery` enabled, the bridge re-establishes that handle instead of
+starting over:
+
+1. **Tag at create** (always on, no cost) — every session is stamped with its A2A
+   `contextId`/`taskId` in the managed-agent session `metadata`.
+2. **On a hot-cache miss** for a *supplied* `contextId`, the bridge lists the agent's
+   **idle** sessions created within `recoveryMaxAgeMinutes`, newest first, and matches
+   the `contextId` in their metadata.
+3. If found, it re-reads that session's events, **reconstructs the pending approval**
+   from the trailing `requires_action`, and resumes — so a human approve/deny that
+   arrives after the cache expired still lands on the right gate.
+
+#### Session recovery message flow
+
+```mermaid
+flowchart TD
+  A(["message/send arrives"]) --> B{"contextId in<br/>hot cache?"}
+  B -->|"Hit"| USE["Use cached session"]
+  B -->|"Miss"| D{"recovery on AND<br/>contextId supplied?"}
+  D -->|"No"| NEW["Create new session<br/>(tagged with contextId)"]
+  D -->|"Yes"| SCAN["Look up live session<br/>GET /v1/sessions<br/>idle · agent · age ≤ maxAge"]
+  SCAN --> M{"Tagged with<br/>this contextId?"}
+  M -->|"No / too old / gone"| NEW
+  M -->|"Found"| REHY["Rehydrate<br/>rebuild pending gate<br/>re-seed hot cache"]
+  USE --> RUN["Run turn"]
+  NEW --> RUN
+  REHY --> RUN
+  RUN --> Z(["Return A2A Task"])
+```
+
+#### When to enable it
+
+Long or asynchronous human-approval windows (an approver who may respond hours later or
+overnight), or added resilience when gateway storage is lossy (multi-replica gossip).
+Leave it **off** (the default) for high-churn, short-lived conversations that don't need
+approval windows beyond `sessionTtlMinutes`.
+
+#### Sizing the two windows
+
+`sessionTtlMinutes` and `recoveryMaxAgeMinutes` measure different things and are set
+together:
+
+- **`sessionTtlMinutes`** bounds the **hot-cache entry** — the fast path. While it holds,
+  a follow-up turn is a cache hit with no lookup. It is a performance knob.
+- **`recoveryMaxAgeMinutes`** bounds the **recovery lookup** by the session's *creation
+  time* — it is the real ceiling on how long a conversation can be resumed at all.
+
+**Set `recoveryMaxAgeMinutes` larger than `sessionTtlMinutes`.** The hot TTL keeps active
+conversations snappy; recovery then extends resumability from where the hot cache leaves
+off out to your approval SLA. For example `sessionTtlMinutes: 60` with
+`recoveryMaxAgeMinutes: 1440` serves the fast path for an hour and still resumes a reply
+up to a day later (e.g. an overnight approval).
+
+Setting `recoveryMaxAgeMinutes` **≤ `sessionTtlMinutes` is almost always a
+misconfiguration**: by the time the hot entry expires at the TTL, the session is already
+about as old as the recovery window, so the scan filters it out and recovery never fires
+for a normal expiry — it quietly behaves like recovery off. (It can still catch a hot
+entry *lost early* — e.g. a multi-replica eviction or a replica restart before the TTL —
+so if resilience to a lost cache is your only goal a window near the TTL is enough; to
+*extend* the resumable window, make it larger.)
+
+#### Cost
+
+One lightweight `GET /v1/sessions` call (~¼–½ s) on the **first turn of a conversation
+whose `contextId` isn't cached** — once per conversation, not per message. It is
+**skipped entirely** when the caller omits `contextId` (a missing `contextId` is
+unambiguously a new conversation). There is **zero overhead when `sessionRecovery` is
+off.**
+
+#### Fail-safe
+
+If no session matches, the match is older than `recoveryMaxAgeMinutes`, or the live
+session is gone, recovery quietly falls back to starting a fresh session — it never
+resurrects the wrong conversation.
 
 ## Build & test
 

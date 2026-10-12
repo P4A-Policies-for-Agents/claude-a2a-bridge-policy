@@ -22,7 +22,7 @@
 //! by anchoring on the `user.message` event id returned by the POST that opened
 //! the turn and interpreting only events *after* it (see [`current_turn`]).
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::time::Duration;
 
 use pdk::data_storage::DataStorage;
@@ -41,6 +41,15 @@ use crate::generated::config::ToolConfirmationConfig;
 use crate::services::claude_client::{self, ClaudeApiError, Confirmation};
 use crate::services::response_mapper::{self, MappedResponse};
 use crate::services::tool_gate::{self, Action, PendingTool};
+
+/// Session-metadata keys the bridge stamps at create time so a conversation can
+/// be recovered by its A2A `contextId` after the gateway's hot cache expires.
+const META_CONTEXT_KEY: &str = "a2a_context_id";
+const META_TASK_KEY: &str = "a2a_task_id";
+
+/// Max idle sessions fetched per recovery lookup. The server already filters by
+/// agent + idle + age window, so the tagged session is normally on the first page.
+const RECOVERY_SCAN_LIMIT: u32 = 50;
 
 /// Turn-level inputs that don't change between calls in one dispatch.
 pub struct ClaudeCtx<'a> {
@@ -66,6 +75,9 @@ pub async fn dispatch<S: DataStorage>(
     poll_interval_ms: u64,
     max_poll_attempts: u32,
     tool_cfg: Option<&ToolConfirmationConfig>,
+    recovery_enabled: bool,
+    recovery_max_age_minutes: i64,
+    context_id_supplied: bool,
 ) -> Result<MappedResponse, ClaudeApiError> {
     let session_store = SessionStore::new(storage);
     let task_store = TaskStore::new(storage);
@@ -75,20 +87,46 @@ pub async fn dispatch<S: DataStorage>(
         match session_store.load::<ClaudeSessionData>(context_id).await {
             Some(e) => e,
             None => {
-                let req = CreateSessionRequest {
-                    agent: agent_id.to_string(),
-                    environment_id: environment_id.to_string(),
+                // Hot-cache miss. A supplied contextId is ambiguous — a genuinely new
+                // conversation OR one whose hot entry expired while its Claude session
+                // lives on. When recovery is enabled, re-attach to the live session
+                // before creating a new one. A missing contextId is unambiguously new,
+                // so recovery is skipped and no lookup overhead is paid.
+                let recovered = if recovery_enabled && context_id_supplied {
+                    recover_session(cx, timer, agent_id, context_id, recovery_max_age_minutes, tool_cfg).await
+                } else {
+                    None
                 };
-                let resp = claude_client::create_session(
-                    cx.http_client, cx.service, cx.api_key, cx.version, cx.beta, &req, cx.timeout_ms,
-                )
-                .await?;
-                let new = SessionEntry {
-                    created_at: 0,
-                    platform: ClaudeSessionData { session_id: resp.id, pending: vec![] },
-                };
-                session_store.create(context_id, &new).await;
-                new
+                match recovered {
+                    Some(e) => {
+                        session_store.save(context_id, &e).await;
+                        e
+                    }
+                    None => {
+                        // Tag the session with the A2A contextId/taskId so the
+                        // conversation can be recovered after the hot cache expires
+                        // (the Claude session itself persists). Always set — it is free
+                        // and is what makes recovery possible.
+                        let mut metadata = BTreeMap::new();
+                        metadata.insert(META_CONTEXT_KEY.to_string(), context_id.to_string());
+                        metadata.insert(META_TASK_KEY.to_string(), task_id.to_string());
+                        let req = CreateSessionRequest {
+                            agent: agent_id.to_string(),
+                            environment_id: environment_id.to_string(),
+                            metadata: Some(metadata),
+                        };
+                        let resp = claude_client::create_session(
+                            cx.http_client, cx.service, cx.api_key, cx.version, cx.beta, &req, cx.timeout_ms,
+                        )
+                        .await?;
+                        let new = SessionEntry {
+                            created_at: 0,
+                            platform: ClaudeSessionData { session_id: resp.id, pending: vec![] },
+                        };
+                        session_store.create(context_id, &new).await;
+                        new
+                    }
+                }
             }
         };
     let session_id = entry.platform.session_id.clone();
@@ -376,5 +414,86 @@ fn extract_pending(events: &[Event], ids: &[String]) -> Vec<PendingTool> {
             }
         })
         .collect()
+}
+
+/// Hot-cache miss recovery: find the still-live managed-agent session tagged with
+/// this A2A `contextId` and rebuild the hot-store entry from it, so a conversation
+/// (including a long-paused input-required gate) resumes instead of restarting.
+///
+/// Scans the agent's idle sessions created no earlier than `max_age_minutes` ago
+/// (wall-clock from `timer.now()`), matches `metadata.a2a_context_id`, then
+/// reconstructs any deferred (pending) tools from the session's trailing
+/// `requires_action`. Best-effort — any failure returns `None` and the caller
+/// creates a fresh session.
+async fn recover_session(
+    cx: &ClaudeCtx<'_>,
+    timer: &Timer,
+    agent_id: &str,
+    context_id: &str,
+    max_age_minutes: i64,
+    tool_cfg: Option<&ToolConfirmationConfig>,
+) -> Option<SessionEntry<ClaudeSessionData>> {
+    // now − maxAge as RFC3339, for the server-side created_at[gte] filter.
+    let now: chrono::DateTime<chrono::Utc> = timer.now().into();
+    let gte = (now - chrono::Duration::minutes(max_age_minutes))
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+
+    let list = claude_client::list_idle_sessions(
+        cx.http_client, cx.service, cx.api_key, cx.version, cx.beta,
+        agent_id, &gte, RECOVERY_SCAN_LIMIT, cx.timeout_ms,
+    )
+    .await
+    .ok()?;
+
+    // Newest-first: the idle session tagged with this contextId.
+    let session_id = list.data.into_iter().find_map(|s| {
+        let matches = s
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get(META_CONTEXT_KEY))
+            .map(|v| v == context_id)
+            .unwrap_or(false);
+        if matches {
+            Some(s.id)
+        } else {
+            None
+        }
+    })?;
+
+    // Rebuild any deferred tools from the session's current events so a resume
+    // relays the human's approve/deny; an idle/end_turn session has none and the
+    // next message is a plain continuation of the conversation.
+    let events = claude_client::list_events(
+        cx.http_client, cx.service, cx.api_key, cx.version, cx.beta, &session_id, cx.timeout_ms,
+    )
+    .await
+    .ok()?;
+    let pending: Vec<PendingToolState> = match last_status(&events.data) {
+        Some(Status::RequiresAction(ids)) => {
+            tool_gate::resolve(&extract_pending(&events.data, &ids), tool_cfg)
+                .into_iter()
+                .filter(|d| matches!(d.action, Action::Defer))
+                .map(|d| PendingToolState {
+                    tool_use_id: d.tool_use_id,
+                    key: d.key,
+                    name: d.name,
+                    message: d.message,
+                    prompt: d.prompt,
+                })
+                .collect()
+        }
+        _ => Vec::new(),
+    };
+
+    logger::info!(
+        "[claude-bridge] recovered session {} for context {} ({} pending tool(s))",
+        session_id,
+        context_id,
+        pending.len()
+    );
+    Some(SessionEntry {
+        created_at: 0,
+        platform: ClaudeSessionData { session_id, pending },
+    })
 }
 

@@ -119,6 +119,16 @@ mod tests {
         .to_string()
     }
 
+    /// A message/send that OMITS contextId (unambiguously a new conversation).
+    fn message_send_no_ctx(text: &str) -> String {
+        json!({
+            "jsonrpc": "2.0", "id": "1", "method": "message/send",
+            "params": {"message": {"role": "user",
+                "parts": [{"type": "text", "text": text}]}}
+        })
+        .to_string()
+    }
+
     fn a2a_post(body: String) -> UnitHttpRequest {
         UnitHttpRequest::post()
             .with_path("/")
@@ -410,6 +420,104 @@ mod tests {
     #[test]
     fn hitl_resume_deny_relays_deny() {
         assert_eq!(run_hitl("ctx-r3", CLASSIFY_DENY, true, "no, reject that"), "deny");
+    }
+
+    // ── session recovery: rehydrate a conversation after the hot cache expires ──
+
+    // GET /v1/sessions returns one idle session tagged with contextId "ctx-recover".
+    const SESSIONS_TAGGED: &str =
+        r#"{"data":[{"id":"recovered-session-001","metadata":{"a2a_context_id":"ctx-recover"}}]}"#;
+
+    /// Recovery backend: GET /v1/sessions -> the tagged idle session; GET events ->
+    /// requires_action until a confirmation is POSTed, then completed; /v1/messages ->
+    /// approve. Records whether the sessions-list scan and a session create were hit.
+    fn recovery_backend(
+        created: Rc<Cell<bool>>,
+        listed: Rc<Cell<bool>>,
+    ) -> impl Fn(UnitHttpRequest) -> UnitHttpResponse + 'static {
+        let confirmed = Rc::new(Cell::new(false));
+        move |req: UnitHttpRequest| {
+            let method = req.header(":method").unwrap_or_default().to_string();
+            let path = req.header(":path").unwrap_or_default().to_string();
+            if path.contains("/v1/messages") {
+                return UnitHttpResponse::new(200).with_body(CLASSIFY_APPROVE);
+            }
+            if method == "POST" && path.contains("/events") {
+                if String::from_utf8_lossy(req.body()).contains("user.tool_confirmation") {
+                    confirmed.set(true);
+                }
+                return UnitHttpResponse::new(200).with_body("{}");
+            }
+            if method == "POST" && path.contains("/v1/sessions") {
+                created.set(true);
+                return UnitHttpResponse::new(200).with_body(CREATE_SESSION);
+            }
+            if method == "GET" && path.contains("/events") {
+                return UnitHttpResponse::new(200)
+                    .with_body(if confirmed.get() { EVENTS_COMPLETED } else { EVENTS_REQUIRES_TOOL });
+            }
+            if method == "GET" && path.contains("/v1/sessions") {
+                listed.set(true);
+                return UnitHttpResponse::new(200).with_body(SESSIONS_TAGGED);
+            }
+            UnitHttpResponse::new(404).with_body("{}")
+        }
+    }
+
+    /// Base config (defaultAction defer) with sessionRecovery toggled.
+    fn config_recovery(recovery: bool) -> String {
+        let mut v: serde_json::Value =
+            serde_json::from_str(&config(Some(json!({ "defaultAction": "defer" })), false)).unwrap();
+        v["sessionRecovery"] = json!(recovery);
+        v["recoveryMaxAgeMinutes"] = json!(1440);
+        v.to_string()
+    }
+
+    #[test]
+    fn recovery_resumes_gate_by_context_id() {
+        // Hot cache is empty (fresh tester) -> miss. With recovery on, the bridge finds
+        // the live session tagged with this contextId, reconstructs the pending gate,
+        // treats "approve" as the decision, and resumes to completion WITHOUT creating
+        // a new session.
+        let created = Rc::new(Cell::new(false));
+        let listed = Rc::new(Cell::new(false));
+        let mut tester = UnitTestBuilder::default()
+            .with_config(config_recovery(true))
+            .with_http_upstream("anthropic-cluster", recovery_backend(created.clone(), listed.clone()))
+            .with_entrypoint(crate::configure);
+        let r = tester.request(a2a_post(message_send("ctx-recover", "approve")));
+        assert_eq!(result_state(&r), "completed", "recovered gate should resume to completion");
+        assert!(listed.get(), "recovery should have scanned GET /v1/sessions");
+        assert!(!created.get(), "recovery should reuse the live session, not create a new one");
+    }
+
+    #[test]
+    fn recovery_disabled_creates_new_session() {
+        // Same miss, but recovery off (the default): no scan, a new session is created.
+        let created = Rc::new(Cell::new(false));
+        let listed = Rc::new(Cell::new(false));
+        let mut tester = UnitTestBuilder::default()
+            .with_config(config_recovery(false))
+            .with_http_upstream("anthropic-cluster", recovery_backend(created.clone(), listed.clone()))
+            .with_entrypoint(crate::configure);
+        tester.request(a2a_post(message_send("ctx-recover", "raise my card limit")));
+        assert!(!listed.get(), "recovery off must not scan sessions");
+        assert!(created.get(), "recovery off must create a new session");
+    }
+
+    #[test]
+    fn recovery_skips_scan_when_no_context_id() {
+        // Recovery on, but the caller omits contextId -> unambiguously new, so the scan
+        // is skipped and a new session is created (the omit-contextId optimization).
+        let created = Rc::new(Cell::new(false));
+        let listed = Rc::new(Cell::new(false));
+        let mut tester = UnitTestBuilder::default()
+            .with_config(config_recovery(true))
+            .with_http_upstream("anthropic-cluster", recovery_backend(created.clone(), listed.clone()))
+            .with_entrypoint(crate::configure);
+        tester.request(a2a_post(message_send_no_ctx("raise my card limit")));
+        assert!(!listed.get(), "a missing contextId must skip the recovery scan");
+        assert!(created.get(), "a missing contextId creates a new session");
     }
 
     #[test]

@@ -116,6 +116,8 @@ On every `message/send` (first or follow-up):
 
 A follow-up `message/send` with the same `contextId` reuses the stored session, so the managed agent continues the conversation naturally — no special resume message type is required.
 
+**Recovery after hot-cache expiry (opt-in).** When the `contextId → session` record has been dropped (its `sessionTtlMinutes` lapsed), a follow-up `message/send` is a hot-cache miss. With `sessionRecovery` enabled *and* a `contextId` supplied, the bridge attempts recovery before creating a new session (`dispatcher::recover_session`): (1) `GET /v1/sessions?agent_id=<id>&statuses[]=idle&created_at[gte]=<now − recoveryMaxAgeMinutes>&order=desc&limit=50` — `now` from `timer.now()`; the server-side filters keep the result to a page; (2) match `metadata.a2a_context_id` (stamped at create) client-side, newest first; (3) `GET …/events` → reconstruct deferred tools from the trailing `requires_action` (`extract_pending` + `tool_gate::resolve`), rebuild the `session_store` entry, and continue — a non-empty `pending` routes through the normal resume (approve/deny) path. A missing `contextId` skips recovery (unambiguously new). Any failure — no match, aged out, session gone — falls through to `create_session`. `sessionRecovery` defaults off; the session tagging at create is unconditional and free.
+
 The events list returned by `GET …/events` is the **full append-only session history**, so a follow-up turn must be scoped to its own events (see *Turn scoping* below).
 
 #### Turn scoping
