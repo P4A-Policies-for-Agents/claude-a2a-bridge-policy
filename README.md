@@ -85,6 +85,8 @@ Configured via `claude-a2a-bridge-definition/gcl.yaml`. Key parameters:
 | `pollIntervalMs` | integer (ms) | `2000` | Delay between event-stream polls |
 | `maxPollAttempts` | integer | `150` | Max polls before a turn is abandoned |
 | `sessionTtlMinutes` | integer (min) | `60` | How long a paused `input-required` conversation stays resumable in gateway storage (clamped 1–1440); after it lapses a later reply starts a new turn |
+| `sessionRecovery` | boolean | `false` | Resume a conversation whose hot-cache entry expired by finding its live Claude session by `contextId` (see [Session recovery](#session-recovery)) |
+| `recoveryMaxAgeMinutes` | integer (min) | `1440` | When recovery is on, the oldest a session may be to be revived (clamped 1–43200) |
 | `toolConfirmation.defaultAction` | enum `allow`\|`deny`\|`defer` | `defer` | Action for tools matching no rule |
 | `toolConfirmation.logDecisions` | boolean | `false` | Log every tool-confirmation decision |
 | `toolConfirmation.rules` | array\<object\> | — | Ordered glob rules (`tool`, `action`, `message`, `prompt`) |
@@ -92,6 +94,58 @@ Configured via `claude-a2a-bridge-definition/gcl.yaml`. Key parameters:
 See `claude-a2a-bridge-flex/docs/spec.md` for the full protocol coverage and
 task lifecycle, and `claude-a2a-bridge-flex/docs/agent-card-asset-source.md`
 for the paste vs. derive agent-card modes.
+
+### Session recovery
+
+`sessionTtlMinutes` keeps a conversation's `contextId → session` mapping in gateway
+storage so follow-up turns are fast. That mapping is a **performance cache**; when it
+expires, a follow-up (including a late reply to a paused `input-required` approval)
+would normally start a brand-new session and lose the thread. But the **managed-agent
+session itself persists on Claude's side** until deleted — it's only the gateway's
+handle that's gone.
+
+```mermaid
+flowchart TD
+  A(["message/send arrives"]) --> B{"contextId in<br/>hot cache?"}
+  B -->|"Hit"| USE["Use cached session"]
+  B -->|"Miss"| D{"recovery on AND<br/>contextId supplied?"}
+  D -->|"No"| NEW["Create new session<br/>(tagged with contextId)"]
+  D -->|"Yes"| SCAN["Look up live session<br/>GET /v1/sessions<br/>idle · agent · age ≤ maxAge"]
+  SCAN --> M{"Tagged with<br/>this contextId?"}
+  M -->|"No / too old / gone"| NEW
+  M -->|"Found"| REHY["Rehydrate<br/>rebuild pending gate<br/>re-seed hot cache"]
+  USE --> RUN["Run turn"]
+  NEW --> RUN
+  REHY --> RUN
+  RUN --> Z(["Return A2A Task"])
+```
+
+With `sessionRecovery` enabled, the bridge re-establishes that handle instead of
+starting over:
+
+1. **Tag at create** (always on, no cost) — every session is stamped with its A2A
+   `contextId`/`taskId` in the managed-agent session `metadata`.
+2. **On a hot-cache miss** for a *supplied* `contextId`, the bridge lists the agent's
+   **idle** sessions created within `recoveryMaxAgeMinutes`, newest first, and matches
+   the `contextId` in their metadata.
+3. If found, it re-reads that session's events, **reconstructs the pending approval**
+   from the trailing `requires_action`, and resumes — so a human approve/deny that
+   arrives after the cache expired still lands on the right gate.
+
+**When to enable it:** long or asynchronous human-approval windows (an approver who may
+respond hours later or overnight), or added resilience when gateway storage is lossy
+(multi-replica gossip). Leave it **off** (the default) for high-churn, short-lived
+conversations that don't need approval windows beyond `sessionTtlMinutes`.
+
+**Cost:** one lightweight `GET /v1/sessions` call (~¼–½ s) on the **first turn of a
+conversation whose `contextId` isn't cached** — once per conversation, not per message.
+It is **skipped entirely** when the caller omits `contextId` (a missing `contextId` is
+unambiguously a new conversation). There is **zero overhead when `sessionRecovery` is
+off.**
+
+**Fail-safe:** if no session matches, the match is older than `recoveryMaxAgeMinutes`,
+or the live session is gone, recovery quietly falls back to starting a fresh session —
+it never resurrects the wrong conversation.
 
 ## Build & test
 
