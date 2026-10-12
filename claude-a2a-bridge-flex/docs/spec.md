@@ -23,10 +23,20 @@ Anthropic API key, sent as the `x-api-key` header on every Claude API call. Use 
 
 > **Phase-2 option**: move the credential out of policy config and onto the upstream cluster via a credential-injection policy (the bridge reuses the inbound route's cluster — see *Outbound routing* — so a credential-injection policy bound to that cluster would apply automatically). Config-held key is the v1 approach.
 
+### `agentCardSource`
+**Type**: `string` (enum `paste` | `derive`) · **Required**: no · **Default**: `paste`
+
+Where the served agent card comes from. `paste`: serve the `agentCard` JSON below verbatim. `derive`: build the card at request time from the managed agent's own configuration (`GET /v1/agents/{agentId}` — name, description, version, and skills synthesized from the agent's MCP servers), with `agentCard` as an optional partial override. The agent's system prompt is never exposed in either mode. See *Behavior → AgentCard* and `docs/agent-onboarding.md`.
+
 ### `agentCard`
 **Type**: `string` · **Required**: yes
 
 The A2A agent card document (JSON string) served at the card path. In `paste` mode it is validated as a canonical A2A v0.3.0 `AgentCard` at configuration time (required top-level fields present); an invalid card fails policy load. In `derive` mode it is an optional **partial override** whose top-level keys win over the derived card. Either way it can still be **overridden** by the A2A Agent Card policy on an agent-network instance.
+
+### `cardDerivation`
+**Type**: `object` · **Required**: no
+
+Tuning for `agentCardSource: derive` (ignored for `paste`). One field: `excludeMcpServers` — an array of case-insensitive glob patterns (`*`) matched against the agent's MCP server names; matches are dropped from the synthesized card skills. Use it to omit shared infrastructure servers that are plumbing rather than user-facing capabilities (e.g. `"*-slack"`).
 
 ### `anthropicVersion`
 **Type**: `string` · **Required**: no · **Default**: `2023-06-01`
@@ -52,6 +62,21 @@ Delay between polls of the events endpoint while a turn is running. With `maxPol
 **Type**: `integer` · **Required**: no · **Default**: `150`
 
 Maximum number of event polls before giving up on a turn (returns a non-completed task). With the default `pollIntervalMs` this yields a **~5 minute** overall response budget — sized for real LLM turns, not just trivial prompts.
+
+### `sessionTtlMinutes`
+**Type**: `integer` · **Required**: no · **Default**: `60` · **Range**: `1–1440`
+
+How long the gateway keeps a conversation's `contextId → session` mapping (the hot-cache entry / fast path) in `data_storage`. While it holds, a follow-up turn is a cache hit with no lookup; after it lapses the record is dropped and a follow-up is a miss (recovered only if `sessionRecovery` is on — see *Session lifecycle → Recovery*). A performance knob; it does **not** delete the managed-agent session, which persists on Claude's side.
+
+### `sessionRecovery`
+**Type**: `boolean` · **Required**: no · **Default**: `false`
+
+When `true`, a hot-cache **miss** for a *supplied* `contextId` first looks up the still-live managed-agent session by its `contextId` and resumes it (rebuilding any pending `input-required` gate) instead of starting a new session. Skipped when the caller omits `contextId` (unambiguously new). Costs one `GET /v1/sessions` call on the first turn of such a conversation; **zero overhead when off.** See *Session lifecycle → Recovery*.
+
+### `recoveryMaxAgeMinutes`
+**Type**: `integer` · **Required**: no · **Default**: `1440` · **Range**: `1–43200`
+
+Used only when `sessionRecovery` is `true`. The maximum age — by session **creation time** — a session may be and still be recovered (the `created_at[gte]` window on the lookup); older sessions are not revived. **Set this larger than `sessionTtlMinutes`** so recovery extends the resumable window past the hot cache; a value at or below `sessionTtlMinutes` leaves nothing for recovery to find on a normal expiry.
 
 ### `toolConfirmation`
 **Type**: `object` · **Required**: no
@@ -116,7 +141,9 @@ On every `message/send` (first or follow-up):
 
 A follow-up `message/send` with the same `contextId` reuses the stored session, so the managed agent continues the conversation naturally — no special resume message type is required.
 
-**Recovery after hot-cache expiry (opt-in).** When the `contextId → session` record has been dropped (its `sessionTtlMinutes` lapsed), a follow-up `message/send` is a hot-cache miss. With `sessionRecovery` enabled *and* a `contextId` supplied, the bridge attempts recovery before creating a new session (`dispatcher::recover_session`): (1) `GET /v1/sessions?agent_id=<id>&statuses[]=idle&created_at[gte]=<now − recoveryMaxAgeMinutes>&order=desc&limit=50` — `now` from `timer.now()`; the server-side filters keep the result to a page; (2) match `metadata.a2a_context_id` (stamped at create) client-side, newest first; (3) `GET …/events` → reconstruct deferred tools from the trailing `requires_action` (`extract_pending` + `tool_gate::resolve`), rebuild the `session_store` entry, and continue — a non-empty `pending` routes through the normal resume (approve/deny) path. A missing `contextId` skips recovery (unambiguously new). Any failure — no match, aged out, session gone — falls through to `create_session`. `sessionRecovery` defaults off; the session tagging at create is unconditional and free.
+#### Recovery after hot-cache expiry (opt-in)
+
+When the `contextId → session` record has been dropped (its `sessionTtlMinutes` lapsed), a follow-up `message/send` is a hot-cache miss. With `sessionRecovery` enabled *and* a `contextId` supplied, the bridge attempts recovery before creating a new session (`dispatcher::recover_session`): (1) `GET /v1/sessions?agent_id=<id>&statuses[]=idle&created_at[gte]=<now − recoveryMaxAgeMinutes>&order=desc&limit=50` — `now` from `timer.now()`; the server-side filters keep the result to a page; (2) match `metadata.a2a_context_id` (stamped at create) client-side, newest first; (3) `GET …/events` → reconstruct deferred tools from the trailing `requires_action` (`extract_pending` + `tool_gate::resolve`), rebuild the `session_store` entry, and continue — a non-empty `pending` routes through the normal resume (approve/deny) path. A missing `contextId` skips recovery (unambiguously new). Any failure — no match, aged out, session gone — falls through to `create_session`. `sessionRecovery` defaults off; the session tagging at create is unconditional and free.
 
 The events list returned by `GET …/events` is the **full append-only session history**, so a follow-up turn must be scoped to its own events (see *Turn scoping* below).
 
@@ -345,4 +372,4 @@ This policy targets an **A2A / agent asset** under management — not plain HTTP
 5. **Group id** — this repo ships with a placeholder all-zeros Exchange `groupId`; set it to the publishing org before release.
 6. **Toolchain** — built against PDK `1.10.0` with crates.io-only dependencies (no private/workspace crates).
 
-Validated end-to-end against the live Managed Agents API (Claude A2A POC agent): `message/send` completion + `Task.metadata` token usage; the event wire shapes; the full tool-confirmation gate — `defer → INPUT_REQUIRED → resume(approve) → COMPLETED`, `read` auto-allow, and `bash` auto-deny; and multi-turn follow-ups on a reused `contextId` (each turn returns its own answer and per-turn usage). 75 unit tests cover mapping, the gate resolver, the auto-allow/deny/defer and HITL-resume paths, turn scoping, card derivation, and the session/task stores.
+Validated end-to-end against the live Managed Agents API (Claude A2A POC agent): `message/send` completion + `Task.metadata` token usage; the event wire shapes; the full tool-confirmation gate — `defer → INPUT_REQUIRED → resume(approve) → COMPLETED`, `read` auto-allow, and `bash` auto-deny; and multi-turn follow-ups on a reused `contextId` (each turn returns its own answer and per-turn usage). 78 unit tests cover mapping, the gate resolver, the auto-allow/deny/defer and HITL-resume paths, turn scoping, card derivation, the session/task stores, and session recovery.
