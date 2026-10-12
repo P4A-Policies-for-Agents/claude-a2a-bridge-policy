@@ -244,6 +244,14 @@ async fn handle_message_send<S: DataStorage>(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .unwrap_or_else(|| Uuid::new_v4().to_string());
+    // A missing contextId is unambiguously a new conversation (we mint one), so
+    // recovery can skip the lookup entirely; only a supplied-but-uncached
+    // contextId is ambiguous (new vs expired-but-resumable).
+    let context_id_supplied = raw
+        .get("message")
+        .and_then(|m| m.get("contextId"))
+        .and_then(|v| v.as_str())
+        .is_some();
 
     // Concatenate all text parts in order.
     let text: String = params
@@ -267,6 +275,11 @@ async fn handle_message_send<S: DataStorage>(
     let timeout_ms = config.timeout.unwrap_or(DEFAULT_TIMEOUT_MS).max(0) as u64;
     let poll_interval_ms = config.poll_interval_ms.unwrap_or(DEFAULT_POLL_INTERVAL_MS).max(0) as u64;
     let max_polls = config.max_poll_attempts.unwrap_or(DEFAULT_MAX_POLLS).max(1) as u32;
+    let recovery_enabled = config.session_recovery.unwrap_or(false);
+    let recovery_max_age_minutes = config
+        .recovery_max_age_minutes
+        .unwrap_or(1440)
+        .clamp(1, 43200);
 
     let cx = services::dispatcher::ClaudeCtx {
         http_client,
@@ -289,6 +302,9 @@ async fn handle_message_send<S: DataStorage>(
         poll_interval_ms,
         max_polls,
         config.tool_confirmation.as_ref(),
+        recovery_enabled,
+        recovery_max_age_minutes,
+        context_id_supplied,
     )
     .await;
 

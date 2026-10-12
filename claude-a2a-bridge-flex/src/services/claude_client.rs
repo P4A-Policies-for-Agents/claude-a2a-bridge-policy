@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use crate::contracts::message::{EventsListResponse, SendEventsRequest};
 use crate::contracts::agent::AgentInfo;
-use crate::contracts::session::{CreateSessionRequest, CreateSessionResponse};
+use crate::contracts::session::{CreateSessionRequest, CreateSessionResponse, SessionsListResponse};
 
 const CONTENT_TYPE: &str = "Content-Type";
 const APPLICATION_JSON: &str = "application/json";
@@ -315,6 +315,45 @@ pub async fn list_events(
         .map_err(|e| ClaudeApiError::Parse(format!("Failed to parse listEvents response: {}", e)))
 }
 
+/// GET /v1/sessions — list this agent's idle sessions no older than `created_at_gte`
+/// (RFC3339), newest first, for recovery-by-contextId. The server-side filters
+/// (agent_id + idle + created_at window) keep the result small; the caller matches
+/// the session metadata (`a2a_context_id`) client-side.
+#[allow(clippy::too_many_arguments)]
+pub async fn list_idle_sessions(
+    http_client: &HttpClient,
+    service: &Service,
+    api_key: &str,
+    version: &str,
+    beta: &str,
+    agent_id: &str,
+    created_at_gte: &str,
+    limit: u32,
+    timeout_ms: u64,
+) -> Result<SessionsListResponse, ClaudeApiError> {
+    validate_path_segment(agent_id, "agentId")?;
+    let path = format!(
+        "/v1/sessions?agent_id={}&statuses%5B%5D=idle&created_at%5Bgte%5D={}&order=desc&limit={}",
+        agent_id,
+        encode_query(created_at_gte),
+        limit
+    );
+    let response = http_client
+        .request(service)
+        .path(&path)
+        .headers(headers(api_key, version, beta))
+        .timeout(Duration::from_millis(timeout_ms))
+        .get()
+        .await
+        .map_err(|e| {
+            logger::error!("[claude-bridge] listSessions call failed: {}", e);
+            ClaudeApiError::Http(e.to_string())
+        })?;
+    check_status(&response, "listSessions")?;
+    serde_json::from_slice::<SessionsListResponse>(response.body())
+        .map_err(|e| ClaudeApiError::Parse(format!("Failed to parse listSessions response: {}", e)))
+}
+
 /// GET /v1/agents/{agentId} — fetch the managed agent's config for card derivation.
 pub async fn get_agent(
     http_client: &HttpClient,
@@ -428,4 +467,17 @@ fn validate_path_segment(value: &str, name: &str) -> Result<(), ClaudeApiError> 
     } else {
         Err(ClaudeApiError::InvalidPath(format!("Invalid characters in {}", name)))
     }
+}
+
+/// Minimal percent-encoding for a query-parameter value. RFC3339 timestamps carry
+/// `:` which must be encoded; everything but RFC3986 unreserved chars is escaped.
+fn encode_query(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for b in value.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => out.push(b as char),
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
 }

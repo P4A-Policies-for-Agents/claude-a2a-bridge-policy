@@ -108,6 +108,25 @@ spec:
         to 1–1440.
       type: integer
       default: 60
+    sessionRecovery:
+      title: Session Recovery
+      description: >
+        When true, a message whose conversation has aged out of the gateway hot cache (its
+        sessionTtlMinutes lapsed) first looks up the still-live managed-agent session by its A2A
+        contextId and resumes it, instead of starting a new session — so a long-paused human-approval
+        (input-required) conversation can continue where it left off. Costs one lightweight
+        sessions-list call on the first turn of such a conversation (skipped when the caller supplies
+        no contextId). Default off.
+      type: boolean
+      default: false
+    recoveryMaxAgeMinutes:
+      title: Recovery Max Age (minutes)
+      description: >
+        Only used when sessionRecovery is true. The oldest a session may be and still be recovered;
+        conversations last active longer ago than this are not revived (a later reply starts fresh).
+        Bounds the lookup and prevents resuming a stale approval. Clamped 1-43200 (30 days).
+      type: integer
+      default: 1440
     toolConfirmation:
       title: Tool Confirmation
       description: >

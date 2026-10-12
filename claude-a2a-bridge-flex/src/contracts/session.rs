@@ -3,6 +3,7 @@
 //! Claude Managed Agents session API request/response types.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 // ── create session: POST /v1/sessions ────────────────────────────────────────
 
@@ -12,6 +13,11 @@ pub struct CreateSessionRequest {
     pub agent: String,
     /// Managed-agent environment id (env_...).
     pub environment_id: String,
+    /// Key/value metadata stamped on the session. The bridge records the A2A
+    /// `contextId` (and `taskId`) here so a conversation can be found again on the
+    /// Claude side after the gateway's hot cache expires. Omitted when empty.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -41,4 +47,22 @@ pub struct PendingToolState {
     /// Custom human-facing approval prompt shown on INPUT_REQUIRED.
     #[serde(default)]
     pub prompt: Option<String>,
+}
+
+// ── list sessions: GET /v1/sessions ───────────────────────────────────────────
+
+/// Envelope for the paginated sessions list (used for recovery-by-contextId).
+#[derive(Deserialize, Debug, Default)]
+pub struct SessionsListResponse {
+    #[serde(default)]
+    pub data: Vec<SessionSummary>,
+}
+
+/// One session in the list. Only the fields recovery needs are modeled; the
+/// `metadata` carries the A2A `contextId` the bridge stamped at create time.
+#[derive(Deserialize, Debug)]
+pub struct SessionSummary {
+    pub id: String,
+    #[serde(default)]
+    pub metadata: Option<BTreeMap<String, String>>,
 }
