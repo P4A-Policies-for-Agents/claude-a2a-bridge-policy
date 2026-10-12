@@ -56,7 +56,7 @@ Configure the managed agent so the card is great *by construction*:
 
 ## 3. Bridge-policy best practices (extraction + safe fallbacks)
 
-Proposed policy config knob: **`agentCardSource: paste | derive`** (default `paste` for back-compat).
+Policy config knob (implemented): **`agentCardSource: paste | derive`** (default `paste` for back-compat).
 
 - **`paste`** — current behavior: serve the configured `agentCard` JSON verbatim.
 - **`derive`** — on load (and/or first card request) the policy calls `GET /v1/agents/{agentId}` and builds the
