@@ -141,6 +141,30 @@ overnight), or added resilience when gateway storage is lossy (multi-replica gos
 Leave it **off** (the default) for high-churn, short-lived conversations that don't need
 approval windows beyond `sessionTtlMinutes`.
 
+#### Sizing the two windows
+
+`sessionTtlMinutes` and `recoveryMaxAgeMinutes` measure different things and are set
+together:
+
+- **`sessionTtlMinutes`** bounds the **hot-cache entry** — the fast path. While it holds,
+  a follow-up turn is a cache hit with no lookup. It is a performance knob.
+- **`recoveryMaxAgeMinutes`** bounds the **recovery lookup** by the session's *creation
+  time* — it is the real ceiling on how long a conversation can be resumed at all.
+
+**Set `recoveryMaxAgeMinutes` larger than `sessionTtlMinutes`.** The hot TTL keeps active
+conversations snappy; recovery then extends resumability from where the hot cache leaves
+off out to your approval SLA. For example `sessionTtlMinutes: 60` with
+`recoveryMaxAgeMinutes: 1440` serves the fast path for an hour and still resumes a reply
+up to a day later (e.g. an overnight approval).
+
+Setting `recoveryMaxAgeMinutes` **≤ `sessionTtlMinutes` is almost always a
+misconfiguration**: by the time the hot entry expires at the TTL, the session is already
+about as old as the recovery window, so the scan filters it out and recovery never fires
+for a normal expiry — it quietly behaves like recovery off. (It can still catch a hot
+entry *lost early* — e.g. a multi-replica eviction or a replica restart before the TTL —
+so if resilience to a lost cache is your only goal a window near the TTL is enough; to
+*extend* the resumable window, make it larger.)
+
 #### Cost
 
 One lightweight `GET /v1/sessions` call (~¼–½ s) on the **first turn of a conversation
