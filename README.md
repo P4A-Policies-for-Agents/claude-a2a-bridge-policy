@@ -104,6 +104,20 @@ would normally start a brand-new session and lose the thread. But the **managed-
 session itself persists on Claude's side** until deleted — it's only the gateway's
 handle that's gone.
 
+With `sessionRecovery` enabled, the bridge re-establishes that handle instead of
+starting over:
+
+1. **Tag at create** (always on, no cost) — every session is stamped with its A2A
+   `contextId`/`taskId` in the managed-agent session `metadata`.
+2. **On a hot-cache miss** for a *supplied* `contextId`, the bridge lists the agent's
+   **idle** sessions created within `recoveryMaxAgeMinutes`, newest first, and matches
+   the `contextId` in their metadata.
+3. If found, it re-reads that session's events, **reconstructs the pending approval**
+   from the trailing `requires_action`, and resumes — so a human approve/deny that
+   arrives after the cache expired still lands on the right gate.
+
+#### Session recovery message flow
+
 ```mermaid
 flowchart TD
   A(["message/send arrives"]) --> B{"contextId in<br/>hot cache?"}
@@ -120,32 +134,26 @@ flowchart TD
   RUN --> Z(["Return A2A Task"])
 ```
 
-With `sessionRecovery` enabled, the bridge re-establishes that handle instead of
-starting over:
+#### When to enable it
 
-1. **Tag at create** (always on, no cost) — every session is stamped with its A2A
-   `contextId`/`taskId` in the managed-agent session `metadata`.
-2. **On a hot-cache miss** for a *supplied* `contextId`, the bridge lists the agent's
-   **idle** sessions created within `recoveryMaxAgeMinutes`, newest first, and matches
-   the `contextId` in their metadata.
-3. If found, it re-reads that session's events, **reconstructs the pending approval**
-   from the trailing `requires_action`, and resumes — so a human approve/deny that
-   arrives after the cache expired still lands on the right gate.
+Long or asynchronous human-approval windows (an approver who may respond hours later or
+overnight), or added resilience when gateway storage is lossy (multi-replica gossip).
+Leave it **off** (the default) for high-churn, short-lived conversations that don't need
+approval windows beyond `sessionTtlMinutes`.
 
-**When to enable it:** long or asynchronous human-approval windows (an approver who may
-respond hours later or overnight), or added resilience when gateway storage is lossy
-(multi-replica gossip). Leave it **off** (the default) for high-churn, short-lived
-conversations that don't need approval windows beyond `sessionTtlMinutes`.
+#### Cost
 
-**Cost:** one lightweight `GET /v1/sessions` call (~¼–½ s) on the **first turn of a
-conversation whose `contextId` isn't cached** — once per conversation, not per message.
-It is **skipped entirely** when the caller omits `contextId` (a missing `contextId` is
+One lightweight `GET /v1/sessions` call (~¼–½ s) on the **first turn of a conversation
+whose `contextId` isn't cached** — once per conversation, not per message. It is
+**skipped entirely** when the caller omits `contextId` (a missing `contextId` is
 unambiguously a new conversation). There is **zero overhead when `sessionRecovery` is
 off.**
 
-**Fail-safe:** if no session matches, the match is older than `recoveryMaxAgeMinutes`,
-or the live session is gone, recovery quietly falls back to starting a fresh session —
-it never resurrects the wrong conversation.
+#### Fail-safe
+
+If no session matches, the match is older than `recoveryMaxAgeMinutes`, or the live
+session is gone, recovery quietly falls back to starting a fresh session — it never
+resurrects the wrong conversation.
 
 ## Build & test
 
